@@ -3,7 +3,7 @@
 	- acquisitions.csv
 	- degrees.csv
 	- ipos.csv
-	- objects.csv
+	- objects.csv (This is a sample file original file is 250Mb)
 	- relationships.csv
 	- train.csv
 	- validation.csv
