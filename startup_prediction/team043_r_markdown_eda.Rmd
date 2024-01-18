@@ -1,0 +1,490 @@
+---
+title: "MGT 6203 Project R Markdown"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load the necessary libraries 
+
+```{r echo=FALSE, warning=FALSE}
+packages = c("dplyr", "ggplot2",
+             "tidyverse", "mltools", 
+             "data.table", "caret", "party", 
+             "rpart", "rpart.plot", "e1071", 
+             "caTools", "class", "randomForest", 
+             "pROC", "plotROC")
+
+## Now load or install & load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+```
+
+
+## Read in the necessary data files
+
+```{r}
+objects = read.csv('datasets/objects.csv')
+degrees = read.csv('datasets/degrees.csv')
+relationships = read.csv('datasets/relationships.csv')
+acquisitions = read.csv('datasets/acquisitions.csv')
+ipos = read.csv('datasets/ipos.csv')
+```
+
+## Data Pre-processing
+
+We perform the following pre processing steps before performing EDA. 
+
+1. The data set contains data that goes all the way back to the 1930s. For our 
+analysis, we consider only records post the year 1980. 
+
+
+```{r}
+objects_filtered = objects %>%
+  filter(as.Date(founded_at) >= "1980-01-01")
+```
+
+2. Filter records with status - 'Acquired', 'IPO' or 'Closed'. Success is defined
+by 'Acquired' or 'IPO' while Failure is defined as 'Closed'. 
+
+
+```{r}
+objects_filtered =  objects_filtered %>% 
+  filter(status %in% c("ipo", "acquired", "closed"))
+
+objects_filtered$status[which(objects_filtered$status == "ipo")] = "acquired"
+
+```
+
+
+3. Filter records where the entity type is a 'Company'.
+
+```{r}
+objects_filtered = objects_filtered %>% 
+  filter(entity_type == 'Company')
+```
+
+
+4. Some of the categories (example of categories: e-commerce, software, biotech,
+etc.) have missing values. The data set already contains a group category called
+'other'. 
+
+Due to this, we eliminate missing values as the fact that placing them in the 
+other category may lead to creating/imputing incorrect data. Example: A missing
+value for an originally Software company might be placed into the other. 
+
+```{r}
+objects_filtered = objects_filtered %>% 
+  filter(category_code != "")
+```
+
+
+5. We have missing values for the Countries as well. We will remove these data 
+records so as to not provide inaccurate information to the model. 
+
+```{r}
+objects_filtered = objects_filtered %>% 
+  filter(country_code != "")
+```
+
+
+6. Instead of including the twitter username for each company, we will be modeling
+it as a Binary Variable indicating Social media presence/absence. 
+
+```{r}
+objects_filtered$twitter_username[objects_filtered$twitter_username!=""] = 1
+objects_filtered$twitter_username[objects_filtered$twitter_username==""] = 0
+objects_filtered$twitter_username = as.numeric(objects_filtered$twitter_username)
+objects_filtered$twitter_presence = objects_filtered$twitter_username
+objects_filtered$twitter_username = NULL
+```
+
+7. We convert the category and country into factor type
+
+```{r}
+objects_filtered$category_code = as.factor(objects_filtered$category_code)
+objects_filtered$country_code = as.factor(objects_filtered$country_code)
+```
+
+8. The response variable as indicated earlier is a binary variable. Success 
+is indicated by 1, while Failure is indicated by 0. 
+
+```{r}
+objects_filtered$status = ifelse(objects_filtered$status == "acquired", 1,0)
+```
+
+9. We quickly verify if there are any duplicate company IDs. We find all the 
+company IDs are unique
+
+```{r}
+anyDuplicated(objects_filtered$id)
+unique_companies = objects_filtered$id
+```
+
+10. We read in the relationships and degrees data and only filter based on the 
+companies that exist in the objects_filtered data frame. We then merge them 
+based on the person ID which acts as the foreign key. 
+
+```{r}
+relationships_filtered = relationships %>% 
+  filter(relationship_object_id %in% unique_companies) 
+
+degrees_filtered = degrees %>% 
+  filter(object_id %in% relationships$person_object_id)
+
+rel_degree_merged = left_join(relationships_filtered, degrees_filtered,
+                              by = c("person_object_id" = "object_id"))
+```
+
+11. We perform some pre-processing to find the following four features - 
+
+a. No. of Founders
+b. No. of MBAs
+c. No. of MSs
+d. No. of PHDs
+
+Please note that these values are calculated for the Top Level Management 
+positions. Therefore, they may be on the lower side with respect to quantity as
+compared to the whole company. 
+
+```{r}
+no_of_founders = rel_degree_merged %>% 
+  filter(grepl('founder', title, ignore.case = TRUE)) %>% 
+  group_by(relationship_object_id) %>%
+  summarize(No_Of_Founders = length(unique(person_object_id)))
+
+no_of_mbas = rel_degree_merged %>% 
+  filter(degree_type == 'MBA') %>% 
+  group_by(relationship_object_id) %>% 
+  summarise(No_Of_MBAs = length(unique(person_object_id)))
+
+no_of_ms = rel_degree_merged %>% 
+  filter(degree_type == 'MS') %>% 
+  group_by(relationship_object_id) %>% 
+  summarise(No_Of_MSs = length(unique(person_object_id)))
+
+no_of_phds = rel_degree_merged %>% 
+  filter(degree_type == 'PhD') %>% 
+  group_by(relationship_object_id) %>% 
+  summarise(No_Of_PHDs = length(unique(person_object_id)))
+```
+
+12. We perform a left join based on our original objects_filtered data frame
+and the above data frames. The ID here will refer to the company ID placed as 
+a foreign key in the rel_degree_merged data frame. 
+
+```{r}
+objects_filtered = left_join(objects_filtered, no_of_founders, 
+                             by = c("id" = "relationship_object_id"))
+objects_filtered = left_join(objects_filtered, no_of_mbas, 
+                             by = c("id" = "relationship_object_id"))
+objects_filtered = left_join(objects_filtered, no_of_ms, 
+                             by = c("id" = "relationship_object_id"))
+objects_filtered = left_join(objects_filtered, no_of_phds, 
+                             by = c("id" = "relationship_object_id"))
+
+objects_filtered$No_Of_Founders[is.na(objects_filtered$No_Of_Founders)] = 1
+objects_filtered$No_Of_MBAs[is.na(objects_filtered$No_Of_MBAs)] = 0
+objects_filtered$No_Of_MSs[is.na(objects_filtered$No_Of_MSs)] = 0
+objects_filtered$No_Of_PHDs[is.na(objects_filtered$No_Of_PHDs)] = 0
+```
+
+13. We then model the countries as to whether they belong to a top 5 country 
+or not, top 5 indicated by the no. of start-ups emerging from that country. 
+
+```{r}
+top_5_countries = objects_filtered %>%
+  group_by(country_code) %>%
+  count() %>%
+  arrange(desc(n)) %>%
+  head(5) %>%
+  dplyr::select(country_code)
+
+top_5_countries$is_top_5_country = 1
+objects_filtered = left_join(objects_filtered, top_5_countries,
+                             by = c("country_code" = "country_code"))
+objects_filtered$is_top_5_country[is.na(objects_filtered$is_top_5_country)] = 0
+```
+
+14.  We consider only records with funding rounds greater than 0 because when we
+consider companies with 0 funding rounds that turn out to be successful, they 
+are self sustainable and the investors don't get an opportunity to invest in 
+such companies. Keeping companies with 0 funding rounds would thus degrade our
+prediction models. 
+
+```{r}
+objects_filtered = objects_filtered %>% filter(funding_rounds > 0)
+```
+
+15. We filter only the necessary columns from the objects_filtered data frame. 
+
+```{r}
+objects_filtered_final = objects_filtered %>% dplyr::select(category_code, 
+                                                     is_top_5_country,
+                                                     milestones, relationships, 
+                                                     funding_rounds, 
+                                                     funding_total_usd,
+                                                     twitter_presence, 
+                                                     No_Of_Founders, No_Of_MBAs,
+                                                     No_Of_MSs, No_Of_PHDs,
+                                                     status)
+```
+
+## Exploratory Data Analysis
+
+### Bar Chart of No. of Companies in each Category 
+
+```{r}
+no_of_companies_vs_category = objects_filtered %>% 
+  filter(category_code != "") %>% 
+  group_by(category_code) %>% 
+  summarise(Total = n()) %>% 
+  arrange(desc(Total))
+
+p<-ggplot(data=head(no_of_companies_vs_category, 20), aes(x=reorder(category_code, -Total), y=Total, fill=category_code)) +
+  geom_bar(stat="identity", position='dodge') + 
+  labs(title = "Number of Companies in Each Category (Top 20 shown)", x = "", y = "Number of Companies") + scale_x_discrete(guide = guide_axis(n.dodge=3)) + 
+  geom_text(aes(label=Total), position=position_dodge(width=0.9), vjust=-0.25) +
+  guides(fill="none") + 
+  theme_minimal()
+p
+```
+
+### Bar Chart of No. of Companies Acquired in each Category
+
+```{r}
+no_of_companies_acquired_vs_category = objects_filtered %>% 
+  filter(category_code != "") %>% 
+  group_by(category_code, status) %>%
+  summarise(acquired = sum(status == 1), closed = sum(status == 0)) %>% 
+  group_by(category_code) %>% 
+  filter(status == 1) %>% 
+  dplyr::select(acquired) %>%
+  arrange(desc(acquired))
+
+p<-ggplot(data=head(no_of_companies_acquired_vs_category, 20), 
+          aes(x=reorder(category_code, -acquired), y=acquired, 
+              fill=category_code)) +
+  geom_bar(stat="identity", position='dodge') + 
+  labs(title = "Number of Companies Acquired in Each Category (Top 10 Shown)", 
+       x = "Category", y = "Number of Companies Acquired") + 
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) + 
+  geom_text(aes(label=acquired), position=position_dodge(width=0.9), 
+            vjust=-0.25) + guides(fill="none") + theme_minimal()
+p
+```
+
+### Acquisition Rate for each Category (Minimum of 40 acquisitions)
+
+```{r}
+acquisition_rate_vs_category = merge(no_of_companies_vs_category, 
+                                     no_of_companies_acquired_vs_category, 
+                                     by='category_code')
+
+acquisition_rate_vs_category = acquisition_rate_vs_category %>% 
+  mutate(acquired_rate = round((acquired/Total)*100)) %>% 
+  filter(acquired >= 40) %>% 
+  arrange(desc(acquired_rate))
+
+p<-ggplot(data=head(acquisition_rate_vs_category, 20),
+          aes(x=reorder(category_code, -acquired_rate),
+              y=acquired_rate, fill=category_code)) +
+  geom_bar(stat="identity", position='dodge') + 
+  labs(title = "Success Rate per Category (Top 20 Shown)", x = "", 
+       y = "Success Rate") + 
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) + 
+  geom_text(aes(label=acquired_rate), position=position_dodge(width=0.9),
+            vjust=-0.25) +
+  guides(fill="none") +
+  theme_minimal()
+p
+```
+### Relationships vs Acquisition Rate
+
+```{r}
+relationships_acquired_status = objects_filtered %>% 
+  group_by(gr=cut(relationships,breaks= c(0,2,4,6,8,10,20,30,40,50,100,Inf)
+, right=FALSE),status) %>% 
+     summarise(n= n()) %>%
+     arrange(as.numeric(gr)) %>%
+  filter(status == 1) %>%
+  arrange(desc(n))
+
+
+relationships_total_status = objects_filtered %>% 
+  group_by(gr=cut(relationships,breaks= c(0,2,4,6,8,10,20,30,40,50,100, Inf)
+, right=FALSE)) %>% 
+     summarise(Total= n()) %>%
+     arrange(as.numeric(gr))
+
+relationships_acquired_rate = merge(relationships_total_status, 
+                                    relationships_acquired_status, by='gr')
+
+relationships_acquired_rate = relationships_acquired_rate %>% 
+  mutate(acquired_rate = round((n/Total)*100))
+
+p<-ggplot(data=head(relationships_acquired_rate, 10), aes(x=gr, y=acquired_rate,
+                                                          fill=gr)) +
+  geom_bar(stat="identity", position='dodge') + 
+  labs(title = "Success Rate vs Number of Relationships", x = "Relationships", 
+       y = "Success Rate") + 
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) + 
+  geom_text(aes(label=acquired_rate), position=position_dodge(width=0.9), 
+            vjust=-0.25) +
+  guides(fill="none") +
+  theme_minimal()
+p
+```
+
+### Acquisitions per Founding year 
+
+```{r}
+objects_filtered = objects_filtered %>% 
+  mutate(Year = format(as.Date(objects_filtered$founded_at, "%Y-%m-%d"), "%Y"))
+
+acquisitions_per_year = objects_filtered %>% 
+  group_by(Year, status) %>% summarise(Acquired = sum(status == 1)) %>% 
+  filter(status == 1) %>% arrange(Year)
+
+companies_founded_per_year = objects_filtered %>% 
+  group_by(Year) %>% 
+  summarise(Total = n())
+
+founded_acquisition_rate = merge(acquisitions_per_year, 
+                                 companies_founded_per_year, by = 'Year') %>%
+  mutate(acquired_rate = round((Acquired/Total)*100))
+
+p <- ggplot(head(founded_acquisition_rate, 34), aes(x=Year, y=Total, group = 1)) +
+   geom_point() + geom_line()+ scale_x_discrete(guide = guide_axis(n.dodge=3)) + 
+  geom_text(aes(label=Total), position=position_dodge(width=0.9), vjust=-0.25) + 
+  labs(title = "Companies Founded over the Years", x = "Founding Year", y = "Total No. of Companies")
+
+q <- ggplot(head(founded_acquisition_rate, 34), aes(x=Year, y=acquired_rate, group = 1)) +
+   geom_point() + geom_line()+ scale_x_discrete(guide = guide_axis(n.dodge=3)) + 
+  geom_text(aes(label=acquired_rate), position=position_dodge(width=0.9), vjust=-0.25) + 
+  labs(title = "Success Rate over the Years", x = "Founding Year", y = "Success Rate")
+  
+par(mfrow=c(2,1))
+plot(p)
+plot(q)
+```
+
+
+### Funding Rounds vs Success Rate
+
+```{r}
+funding_rounds_acquired_status = objects_filtered %>% 
+  group_by(gr=cut(funding_rounds,breaks= c(1,2,3,4,5,6,7,8,9,10,11,12,13)
+, right=FALSE),status) %>% 
+     summarise(n= n()) %>%
+     arrange(as.numeric(gr)) %>%
+  filter(status == 1) %>%
+  arrange(desc(n))
+
+
+funding_rounds_total_status = objects_filtered %>% 
+  group_by(gr=cut(funding_rounds,breaks=  c(1,2,3,4,5,6,7,8,9,10,11,12,13)
+, right=FALSE)) %>% 
+     summarise(Total= n()) %>%
+     arrange(as.numeric(gr))
+
+
+funding_rounds_acquired_rate = merge(funding_rounds_total_status, funding_rounds_acquired_status, by='gr')
+
+funding_rounds_acquired_rate = funding_rounds_acquired_rate %>% 
+  mutate(acquired_rate = round((n/Total)*100))
+
+p<-ggplot(data=head(funding_rounds_acquired_rate, 12), aes(x=gr, y=acquired_rate, fill=gr)) +
+  geom_bar(stat="identity", position='dodge') + 
+  labs(title = "Success Rate vs Funding rounds", x = "Funding Rounds", y = "Success Rate") + 
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) + 
+  geom_text(aes(label=acquired_rate), position=position_dodge(width=0.9), vjust=-0.25) +
+  guides(fill="none") +
+  theme_minimal()
+p
+```
+
+### Companies Found Closed Year
+
+```{r}
+objects_filtered = objects_filtered %>% 
+  mutate(Closed_Year = format(as.Date(objects_filtered$closed_at, "%Y-%m-%d"), 
+                              "%Y"))
+
+closed_year = objects_filtered %>% 
+  filter(Closed_Year >= '1980') %>% 
+  group_by(Closed_Year) %>% count()
+
+nrow(closed_year)
+
+ggplot(head(closed_year, 16), aes(x=Closed_Year, y=n, group = 1)) +
+   geom_point() + geom_line()+ scale_x_discrete(guide = guide_axis(n.dodge=3)) + 
+  geom_text(aes(label=n), position=position_dodge(width=0.9), vjust=-0.25) + 
+  labs(title = "No. of Companies closed over the years", x = "Closing Year",
+       y = "No. of Companies")
+```
+
+### Companies Found Acquisition Year
+
+```{r}
+acquisitions = acquisitions %>% mutate(Acquired_Year = format(as.Date(acquisitions$acquired_at, "%Y-%m-%d"), "%Y"))
+ipos = ipos %>% mutate(IPO_Year = format(as.Date(ipos$public_at, "%Y-%m-%d"), "%Y"))
+
+acquisitions_grouped = acquisitions %>% group_by(Acquired_Year) %>% count()
+ipos_grouped = ipos %>% group_by(IPO_Year) %>% count()
+
+acquisition_ipo_joined = left_join(acquisitions_grouped, ipos_grouped, by=c("Acquired_Year"="IPO_Year"))
+
+acquisition_ipo_joined$Count = rowSums(acquisition_ipo_joined[,c("n.x", "n.y")], na.rm=TRUE)
+
+ggplot(head(acquisition_ipo_joined, 33), aes(x=Acquired_Year, y=Count, group = 1)) +
+   geom_point() + geom_line()+ scale_x_discrete(guide = guide_axis(n.dodge=3)) + 
+  geom_text(aes(label=Count), position=position_dodge(width=0.9), vjust=-0.25) + 
+  labs(title = "No. of Companies acquired/ipo over the years", x = "Acquired/IPO Year", y = "No. of Companies")
+```
+
+## Train, Validation and Test Split
+
+We One hot encode the categorical variables present in the data set. 
+
+We split our data set into Train (70%), Validation (15%) and Test (15%) sets. 
+The train.csv, validation.csv and test.csv have already been written into the
+datasets/ folder beforehand and therefore the 3 write.csv lines are commented 
+out. 
+
+Please head over to the file team043_r_markdown_models.Rmd to view the code
+for building the ML Models. 
+
+```{r}
+newdata <- one_hot(as.data.table(objects_filtered_final))
+
+set.seed(2)
+train.index <- createDataPartition(newdata$status, p = .7, list = FALSE)
+train <- newdata[ train.index,]
+test  <- newdata[-train.index,]
+
+set.seed(2)
+validation.index <- createDataPartition(test$status, p = .5, list = FALSE)
+validation = test[validation.index, ]
+final_test = test[-validation.index, ]
+
+# write.csv(train, 'datasets/train.csv')
+# write.csv(validation, 'datasets/validation.csv')
+# write.csv(final_test, 'datasets/test.csv')
+
+```
+
+
+
+

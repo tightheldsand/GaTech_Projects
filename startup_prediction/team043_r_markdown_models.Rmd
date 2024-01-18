@@ -1,0 +1,454 @@
+---
+title: "MGT 6203 Project R Markdown Models"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load the necessary libraries 
+
+
+```{r echo=FALSE, warning=FALSE}
+packages = c("functClust", "dplyr", "ggplot2", "ParamHelpers", 
+             "mlr", "tidyverse", "mltools", "data.table", "caret", 
+             "party", "rpart", "rpart.plot", "e1071", "caTools", 
+             "class", "randomForest", "pROC", "plotROC")
+
+## Now load or install & load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+```
+
+
+##Model Building
+
+Extensive hyper parameter tuning was performed which was computationally 
+expensive. The optimization takes approximately 15 minutes for some models.  
+For the purposes of this markdown, we will be commenting out the hyper 
+parameter tuning and including our analysis in our report. 
+
+### Logistic Regression 
+
+
+```{r warning=FALSE}
+
+# read the data 
+train_data <- read.csv('datasets/train.csv')[,-1]
+test_data <- read.csv('datasets/test.csv')[,-1]
+validation_data <- read.csv('datasets/validation.csv')[,-1]
+
+# building the model
+reg = glm(status~.,family=binomial(link = "logit"), data=train_data)
+ 
+# performing prediction and setting threshold as 0.5
+y_hat<-predict(reg,validation_data[, -50],type = "response", response=1)
+y_hat_round <- as.integer(y_hat > 0.5)
+
+# confusion matrix
+confusionMatrix(as.factor(y_hat_round), as.factor(validation_data$status), positive='1')
+
+# roc plot
+r<-roc(validation_data$status, y_hat_round)
+plot(r,main="ROC curve")
+r
+
+# variables for accuracy and auc 
+acc <- c()
+auc <- c()
+
+# checking the values for various thresholds 
+for (i in 1:9) {
+  y_hat_round <- as.integer(y_hat > i/10)
+  t <- table(y_hat_round,validation_data$status)
+  acc <- cbind(acc,(t[1,1] + t[2,2]) / sum(t))
+  r<-roc(validation_data$status,y_hat_round)
+  auc <- cbind(auc,r$auc)
+}
+
+# plot of threshold vs accuracy
+plot(seq(0.1, 0.9, 0.1), acc, "l", xlab="Threshold", ylab="Accuracy")
+acc
+auc
+
+# addition of a penalty term when the actual value is 0, but predicted is 1 
+loss <- c()
+for(i in 1:100)
+{
+  # calculate threshold predictions
+  y_hat_round <- as.integer(y_hat > (i/100)) 
+
+  tm <-as.matrix(table(y_hat_round,validation_data$status))
+
+  if(nrow(tm)>1) { c1 <- tm[2,1] } else { c1 <- 0 }
+  if(ncol(tm)>1) { c2 <- tm[1,2] } else { c2 <- 0 }
+  # penalty is 5
+  loss <- c(loss, c2 + c1*5)
+}
+
+# plot of threshold vs loss 
+plot(c(1:100)/100,loss,xlab = "Threshold",ylab = "Loss", main = "Loss vs Threshold")
+which.min(loss)
+loss
+
+# validation set on minimum loss
+y_hat_round <- as.integer(y_hat > (which.min(loss)/100)) 
+t <- table(y_hat_round,validation_data$status)
+acc <- (t[1,1] + t[2,2]) / sum(t) 
+r<-roc(validation_data$status,y_hat_round)
+auc <- r$auc 
+
+acc
+auc
+
+# test set 
+y_hat<-predict(reg, test_data[, -50], type = "response")
+y_hat_round <- as.integer(y_hat > 0.5)
+
+t <- table(y_hat_round,test_data$status)
+t
+
+acc <- (t[1,1] + t[2,2]) / sum(t)
+acc
+
+
+confusionMatrix(as.factor(y_hat_round), as.factor(test_data$status), positive='1')
+
+```
+
+
+### SVM - Support Vector Machine 
+
+```{r warning=FALSE}
+set.seed(2)
+
+# read the data 
+train_data <- read.csv('datasets/train.csv')[,-1]
+test_data <- read.csv('datasets/test.csv')[,-1]
+validation_data <- read.csv('datasets/validation.csv')[,-1]
+
+###############################################################
+#################### HYPERPARAMETER TUNING ####################
+###############################################################
+
+
+##### kernel selection
+
+
+# kernels <- c('radial', 'linear', 'polynomial', 'sigmoid')
+# accuracy <- c()
+# for (k in kernels){
+#   set.seed(2)
+#   osvm_model <- svm(status~., train_data,
+#                     kernel = k, type = 'C-classification', degree = 3)
+#   preds <- as.factor(predict(osvm_model, validation_data[,-50]))
+#   accuracy <- append(accuracy, confusionMatrix(as.factor(validation_data$status),
+#                                                preds)$overall[['Accuracy']])
+# }
+# 
+# plot(1:4, accuracy, type='l')
+# abline(v = (1:4)[which.max(accuracy)])
+# print(kernels[which.max(accuracy)])
+# kernel_ideal = kernels[which.max(accuracy)]
+# 
+# 
+
+
+### gamma selection
+
+
+# gamma_ <-  seq(0.08,0.1,0.01)
+# accuracy <- c()
+# for (g in gamma_){
+#   set.seed(2)
+#   osvm_model <- svm(status~., train_data,
+#                     kernel = kernel_ideal, type = 'C-classification', gamma = g)
+#   preds <- as.factor(predict(osvm_model, validation_data[,-50]))
+#   accuracy <- append(accuracy, confusionMatrix(as.factor(validation_data$status),
+#                                                preds)$overall[['Accuracy']])
+# }
+# 
+# plot(gamma_, accuracy, type='l')
+# abline(v = gamma_[which.max(accuracy)])
+# print(gamma_[which.max(accuracy)])
+# gamma_ideal = gamma_[which.max(accuracy)]
+
+
+### cost selection
+
+
+# nu_ <-  seq(9,11,1)
+# accuracy <- c()
+# for (n in nu_){
+#   set.seed(2)
+#   osvm_model <- svm(status~., train_data,
+#                     kernel = kernel_ideal, type = 'C-classification', 
+#                     gamma = gamma_ideal,
+#                     cost = n)
+#   preds <- as.factor(predict(osvm_model, validation_data[,-50]))
+#   accuracy <- append(accuracy, confusionMatrix(as.factor(validation_data$status),
+#                                                preds)$overall[['Accuracy']])
+# }
+
+# plot(nu_, accuracy, type='l')
+# abline(v = nu_[which.max(accuracy)])
+# print(nu_[which.max(accuracy)])
+# nu_ideal = nu_[which.max(accuracy)]
+
+
+# # ideal values for hyper parameters
+# print(paste("Kernel Ideal Value: ", kernel_ideal))
+# print(paste("Gamma Ideal Value: ", gamma_ideal))
+# print(paste("Nu Ideal Value: ", nu_ideal))
+
+
+##################################################
+#################### TEST SET ####################
+##################################################
+
+
+kernel_ideal = 'polynomial'
+gamma_ideal = 0.09
+nu_ideal = 10
+
+set.seed(2)
+svm_model <- svm(status~., train_data,
+                  kernel = kernel_ideal, type = 'C-classification', gamma = gamma_ideal,
+                  cost = nu_ideal, degree=3)
+preds <- as.factor(predict(svm_model, test_data[,-50]))
+confusionMatrix(preds, as.factor(test_data$status), positive='1')
+```
+
+
+
+### Decision Tree
+
+```{r}
+set.seed(2)
+
+# read the data
+train_data <- read.csv('datasets/train.csv')[,-1]
+test_data <- read.csv('datasets/test.csv')[,-1]
+validation_data <- read.csv('datasets/validation.csv')[,-1]
+
+###############################################################
+#################### HYPERPARAMETER TUNING ####################
+###############################################################
+
+
+# max_depth <- c(2,3,4)
+# min_bucket = c(25, 50, 100)
+# min_split = c(25, 50, 100, 200)
+# accuracy <- c()
+# for (i in max_depth){
+#   for (j in min_bucket) {
+#     for (k in min_split) {
+#     set.seed(2)
+#     control = rpart.control(maxdepth = i, minbucket = j, minsplit = k)
+#     dt_model <- rpart(status~., data = train_data, method = 'class', control = control)
+#     predict_unseen <- predict(dt_model, validation_data[, -50], type = 'class')
+#     table_mat <- table(validation_data$status, predict_unseen)
+#     accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+#     print(accuracy_Test)
+#     }
+#   }
+# }
+#  
+
+
+##################################################
+#################### TEST SET ####################
+##################################################
+
+
+control = rpart.control(minsplit = 200, maxdepth = 4, minbucket = 50)
+set.seed(2)
+dt_model <- rpart(status~., data = train_data, method = 'class', control = control)
+predict_unseen <- predict(dt_model, test_data[, -50], type = 'class')
+confusionMatrix(as.factor(predict_unseen), as.factor(test_data$status), positive = '1')
+rpart.plot(dt_model, box.palette="RdBu", shadow.col="gray", nn=TRUE)
+
+```
+
+
+
+## Random Forest 
+
+```{r warning=FALSE}
+set.seed(2)
+
+# read the data
+train_data <- read.csv('datasets/train.csv')[,-1]
+test_data <- read.csv('datasets/test.csv')[,-1]
+validation_data <- read.csv('datasets/validation.csv')[,-1]
+
+###############################################################
+#################### HYPERPARAMETER TUNING ####################
+###############################################################
+
+
+## tree counts
+
+
+# tree_count <- c(1,2,5,10,20,50,100,200)
+# accuracy <- c()
+# for (i in tree_count){
+#   set.seed(2)
+#   rf_model <- randomForest(as.factor(status) ~ ., data = train_data,
+#                            ntree = i)
+#   predictions <- predict(rf_model, validation_data[,-50], type = 'response')
+#   accuracy <- append(accuracy, confusionMatrix(as.factor(validation_data$status),
+#                                                predictions)$overall[['Accuracy']])
+# }
+# 
+# plot(tree_count, accuracy, type='l')
+# abline(v = tree_count[which.max(accuracy)])
+# print(tree_count[which.max(accuracy)])
+# tree_count_ideal = tree_count[which.max(accuracy)]
+
+
+## mtries
+
+
+# mtries = 20:30
+# accuracy <- c()
+# for (i in mtries){
+#   set.seed(2)
+#   rf_model <- randomForest(as.factor(status) ~ ., data = train_data, mtry = i)
+#   predictions <- predict(rf_model, validation_data[,-50], type = 'response')
+#   accuracy <- append(accuracy, confusionMatrix(as.factor(validation_data$status),
+#                                                predictions)$overall[['Accuracy']])
+# }
+# 
+# plot(mtries, accuracy, type='l')
+# abline(v = mtries[which.max(accuracy)])
+# mtries[which.max(accuracy)]
+# mtries_ideal = mtries[which.max(accuracy)]
+
+
+## min nodes
+
+
+# min_node <- c(1,2,5,10,20,50)
+# accuracy <- c()
+# for (i in min_node){
+#   set.seed(2)
+#   rf_model <- randomForest(as.factor(status) ~ ., data = train_data, nodesize = i)
+#   predictions <- predict(rf_model, validation_data[,-50], type = 'response')
+#   accuracy <- append(accuracy, confusionMatrix(as.factor(validation_data$status),
+#                                                predictions)$overall[['Accuracy']])
+# }
+# 
+# plot(min_node, accuracy, type='l')
+# abline(v = min_node[which.max(accuracy)])
+# print(min_node[which.max(accuracy)])
+# min_nodes_ideal = min_node[which.max(accuracy)]
+
+
+## max nodes
+
+
+# max_node <- c(100,200,500,1000,2000)
+# accuracy <- c()
+# for (i in max_node){
+#   set.seed(2)
+#   rf_model <- randomForest(as.factor(status) ~ ., data = train_data, maxnodes = i)
+#   predictions <- predict(rf_model, validation_data[,-50], type = 'response')
+#   accuracy <- append(accuracy, confusionMatrix(as.factor(validation_data$status),
+#                                                predictions)$overall[['Accuracy']])
+# }
+
+
+# plot(max_node, accuracy, type='l')
+# abline(v = max_node[which.max(accuracy)])
+# print(max_node[which.max(accuracy)])
+# max_nodes_ideal = max_node[which.max(accuracy)]
+
+# print(paste("Tree Counts Ideal Value: ", tree_count_ideal))
+# print(paste("Mtries Ideal Value: ", mtries_ideal))
+# print(paste("Max Nodes Ideal Value: ", max_nodes_ideal))
+# print(paste("Min Nodes Ideal Value: ", min_nodes_ideal))
+
+
+##################################################
+#################### TEST SET ####################
+##################################################
+
+tree_count_ideal = 1000
+mtries_ideal = 3
+max_nodes_ideal = 50
+node_size_ideal = 200
+set.seed(2)
+rf_model <- randomForest(as.factor(status) ~ ., data = train_data,
+                         ntree = tree_count_ideal, mtry = mtries_ideal, 
+                         maxnodes = max_nodes_ideal, nodesize = node_size_ideal,
+                         classwt = c(0.4,0.6))
+predictions <- predict(rf_model, test_data[,-50], type = 'response', response=1)
+confusionMatrix(as.factor(predictions), as.factor(test_data$status), positive='1')
+
+```
+
+### KNN 
+
+```{r}
+#read the data
+train_data <- read.csv('datasets/train.csv')[,-1]
+test_data <- read.csv('datasets/test.csv')[,-1]
+validation_data <- read.csv('datasets/validation.csv')[,-1]
+
+###############################################################
+#################### HYPERPARAMETER TUNING ####################
+###############################################################
+
+
+#Varying K in KNN classification
+val_accuracy<- list()
+# test_accuracy <- list()
+for (k in (1:10)){
+
+set.seed(3)
+validation <- knn(train = subset(train_data, select = -c(status)),
+                      test = subset(validation_data, select = -c(status)),
+                      cl = as.factor(train_data$status),
+                      k = k)
+
+val_accuracy <- append(val_accuracy, confusionMatrix(as.factor(validation_data$status),
+                                               validation )$overall[['Accuracy']])
+}
+
+#Validation Accuracy
+plot(unlist((1:10)),unlist(val_accuracy),  type = "l", ylab="Validation Accuracy", 
+     xlab="K in KNN")
+
+val_accuracy
+k_ideal = which.max(val_accuracy)
+k_ideal
+print(paste("Ideal K Value: ", k_ideal))
+
+
+##################################################
+#################### TEST SET ####################
+##################################################
+
+
+test <- knn(train = subset(train_data, select = -c(status)),
+                      test = subset(test_data, select = -c(status)),
+                      cl = as.factor(train_data$status),
+                      k = 9)
+confusionMatrix(test, as.factor(test_data$status), positive='1')
+```
+
+
+
+
+
