@@ -1,4 +1,4 @@
-# GaTech_Projects-sbose49
+# GaTech_Projects
 This is my repositroy to save my Georgia Tech Projects.
 <br>
 Author: Sujoy Bose
